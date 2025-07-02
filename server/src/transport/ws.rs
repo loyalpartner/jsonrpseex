@@ -33,8 +33,28 @@ enum Incoming {
 	Pong,
 }
 
-pub(crate) async fn send_message(sender: &mut Sender, response: Box<RawValue>) -> Result<(), SokettoError> {
-	sender.send_text_owned(String::from(Box::<str>::from(response))).await?;
+pub(crate) async fn send_message(
+	sender: &mut Sender, 
+	response: Box<RawValue>,
+	encryption: Option<&std::sync::Arc<dyn crate::server::MessageEncryption>>
+) -> Result<(), SokettoError> {
+	let text = String::from(Box::<str>::from(response));
+	
+	let final_text = match encryption {
+		Some(enc) => {
+			match enc.encrypt(&text) {
+				Ok(encrypted) => encrypted,
+				Err(e) => {
+					tracing::error!(target: crate::LOG_TARGET, "Encryption failed: {}", e);
+					// If encryption fails, close the connection
+					return Err(SokettoError::Closed);
+				}
+			}
+		}
+		None => text,
+	};
+	
+	sender.send_text_owned(final_text).await?;
 	sender.flush().await
 }
 
@@ -59,6 +79,7 @@ pub(crate) struct BackgroundTaskParams<S> {
 	pub(crate) pending_calls_completed: mpsc::Receiver<()>,
 	pub(crate) on_session_close: Option<SessionClose>,
 	pub(crate) extensions: http::Extensions,
+	pub(crate) message_encryption: Option<std::sync::Arc<dyn crate::server::MessageEncryption>>,
 }
 
 pub(crate) async fn background_task<S>(params: BackgroundTaskParams<S>)
@@ -82,13 +103,14 @@ where
 		pending_calls_completed,
 		mut on_session_close,
 		extensions,
+		message_encryption,
 	} = params;
 	let ServerConfig { ping_config, batch_requests_config, max_request_body_size, .. } = server_cfg;
 
 	let (conn_tx, conn_rx) = oneshot::channel();
 
 	// Spawn another task that sends out the responses on the Websocket.
-	let send_task_handle = tokio::spawn(send_task(rx, ws_sender, ping_config, conn_rx));
+	let send_task_handle = tokio::spawn(send_task(rx, ws_sender, ping_config, conn_rx, message_encryption.clone()));
 
 	let stopped = conn.stop_handle.clone().shutdown();
 	let rpc_service = Arc::new(rpc_service);
@@ -150,9 +172,35 @@ where
 		let rpc_service = rpc_service.clone();
 		let sink = sink.clone();
 		let extensions = extensions.clone();
+		let message_encryption = message_encryption.clone();
 
 		tokio::spawn(async move {
-			let first_non_whitespace = data.iter().enumerate().take(128).find(|(_, byte)| !byte.is_ascii_whitespace());
+			// Decrypt the data if encryption is enabled
+			let decrypted_data = match &message_encryption {
+				Some(enc) => {
+					// Convert bytes to string for decryption
+					let encrypted_text = match String::from_utf8(data.clone()) {
+						Ok(text) => text,
+						Err(_) => {
+							tracing::error!(target: crate::LOG_TARGET, "Failed to convert received data to UTF-8");
+							_ = sink.send_error(Id::Null, ErrorCode::ParseError.into()).await;
+							return;
+						}
+					};
+					
+					match enc.decrypt(&encrypted_text) {
+						Ok(decrypted) => decrypted.into_bytes(),
+						Err(e) => {
+							tracing::error!(target: crate::LOG_TARGET, "Decryption failed: {}", e);
+							_ = sink.send_error(Id::Null, ErrorCode::ParseError.into()).await;
+							return;
+						}
+					}
+				}
+				None => data,
+			};
+
+			let first_non_whitespace = decrypted_data.iter().enumerate().take(128).find(|(_, byte)| !byte.is_ascii_whitespace());
 
 			let (idx, is_single) = match first_non_whitespace {
 				Some((start, b'{')) => (start, true),
@@ -163,7 +211,7 @@ where
 				}
 			};
 
-			let rp = handle_rpc_call(&data[idx..], is_single, batch_requests_config, &*rpc_service, extensions).await;
+			let rp = handle_rpc_call(&decrypted_data[idx..], is_single, batch_requests_config, &*rpc_service, extensions).await;
 
 			// Subscriptions are handled by the subscription callback and
 			// "ordinary notifications" should not be sent back to the client.
@@ -204,6 +252,7 @@ async fn send_task(
 	mut ws_sender: Sender,
 	ping_config: Option<PingConfig>,
 	stop: oneshot::Receiver<()>,
+	message_encryption: Option<std::sync::Arc<dyn crate::server::MessageEncryption>>,
 ) {
 	let ping_interval = match ping_config {
 		None => IntervalStream::pending(),
@@ -228,7 +277,7 @@ async fn send_task(
 			// Received message.
 			Either::Left((Some(response), not_ready)) => {
 				// If websocket message send fail then terminate the connection.
-				if let Err(err) = send_message(&mut ws_sender, response).await {
+				if let Err(err) = send_message(&mut ws_sender, response, message_encryption.as_ref()).await {
 					tracing::debug!(target: LOG_TARGET, "WS send error: {}", err);
 					break;
 				}
@@ -484,6 +533,7 @@ where
 				let (sender, receiver) = ws_builder.finish();
 
 				let params = BackgroundTaskParams {
+					message_encryption: server_cfg.message_encryption.clone(),
 					server_cfg,
 					conn,
 					ws_sender: sender,

@@ -62,6 +62,18 @@ use tower::layer::util::Identity;
 use tower::{Layer, Service};
 use tracing::{Instrument, instrument};
 
+/// Trait for message encryption and decryption.
+/// 
+/// Users can implement this trait to provide custom encryption algorithms
+/// for WebSocket message encryption.
+pub trait MessageEncryption: Send + Sync + 'static {
+    /// Encrypt a JSON-RPC message string.
+    fn encrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+    
+    /// Decrypt a JSON-RPC message string.
+    fn decrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Default maximum connections allowed.
 const MAX_CONNECTIONS: u32 = 100;
 
@@ -172,7 +184,7 @@ where
 }
 
 /// Static server configuration which is shared per connection.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
 	/// Maximum size in bytes of a request.
 	pub(crate) max_request_body_size: u32,
@@ -198,10 +210,32 @@ pub struct ServerConfig {
 	pub(crate) id_provider: Arc<dyn IdProvider>,
 	/// `TCP_NODELAY` settings.
 	pub(crate) tcp_no_delay: bool,
+	/// Message encryption implementation.
+	pub(crate) message_encryption: Option<Arc<dyn MessageEncryption>>,
+}
+
+impl std::fmt::Debug for ServerConfig {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ServerConfig")
+			.field("max_request_body_size", &self.max_request_body_size)
+			.field("max_response_body_size", &self.max_response_body_size)
+			.field("max_connections", &self.max_connections)
+			.field("max_subscriptions_per_connection", &self.max_subscriptions_per_connection)
+			.field("batch_requests_config", &self.batch_requests_config)
+			.field("tokio_runtime", &self.tokio_runtime)
+			.field("enable_http", &self.enable_http)
+			.field("enable_ws", &self.enable_ws)
+			.field("message_buffer_capacity", &self.message_buffer_capacity)
+			.field("ping_config", &self.ping_config)
+			.field("id_provider", &"Arc<dyn IdProvider>")
+			.field("tcp_no_delay", &self.tcp_no_delay)
+			.field("message_encryption", &self.message_encryption.is_some())
+			.finish()
+	}
 }
 
 /// The builder to configure and create a JSON-RPC server configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfigBuilder {
 	/// Maximum size in bytes of a request.
 	max_request_body_size: u32,
@@ -227,6 +261,28 @@ pub struct ServerConfigBuilder {
 	id_provider: Arc<dyn IdProvider>,
 	/// `TCP_NODELAY` settings.
 	tcp_no_delay: bool,
+	/// Message encryption implementation.
+	message_encryption: Option<Arc<dyn MessageEncryption>>,
+}
+
+impl std::fmt::Debug for ServerConfigBuilder {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("ServerConfigBuilder")
+			.field("max_request_body_size", &self.max_request_body_size)
+			.field("max_response_body_size", &self.max_response_body_size)
+			.field("max_connections", &self.max_connections)
+			.field("max_subscriptions_per_connection", &self.max_subscriptions_per_connection)
+			.field("batch_requests_config", &self.batch_requests_config)
+			.field("tokio_runtime", &self.tokio_runtime)
+			.field("enable_http", &self.enable_http)
+			.field("enable_ws", &self.enable_ws)
+			.field("message_buffer_capacity", &self.message_buffer_capacity)
+			.field("ping_config", &self.ping_config)
+			.field("id_provider", &"Arc<dyn IdProvider>")
+			.field("tcp_no_delay", &self.tcp_no_delay)
+			.field("message_encryption", &self.message_encryption.is_some())
+			.finish()
+	}
 }
 
 /// Builder for [`TowerService`].
@@ -365,6 +421,7 @@ impl Default for ServerConfigBuilder {
 			ping_config: None,
 			id_provider: Arc::new(RandomIntegerIdProvider),
 			tcp_no_delay: true,
+			message_encryption: None,
 		}
 	}
 }
@@ -520,6 +577,15 @@ impl ServerConfigBuilder {
 		self
 	}
 
+	/// Set custom message encryption implementation.
+	/// 
+	/// This enables encryption/decryption of JSON-RPC messages sent over WebSocket.
+	/// The encryption is applied to the entire JSON-RPC message string.
+	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
+		self.message_encryption = Some(Arc::new(encryption));
+		self
+	}
+
 	/// Build the [`ServerConfig`].
 	pub fn build(self) -> ServerConfig {
 		ServerConfig {
@@ -535,6 +601,7 @@ impl ServerConfigBuilder {
 			ping_config: self.ping_config,
 			id_provider: self.id_provider,
 			tcp_no_delay: self.tcp_no_delay,
+			message_encryption: self.message_encryption,
 		}
 	}
 }
@@ -708,6 +775,15 @@ impl<HttpMiddleware, RpcMiddleware> Builder<HttpMiddleware, RpcMiddleware> {
 	/// ```
 	pub fn set_rpc_middleware<T>(self, rpc_middleware: RpcServiceBuilder<T>) -> Builder<HttpMiddleware, T> {
 		Builder { server_cfg: self.server_cfg, rpc_middleware, http_middleware: self.http_middleware }
+	}
+
+	/// Set custom message encryption implementation.
+	/// 
+	/// This enables encryption/decryption of JSON-RPC messages sent over WebSocket.
+	/// The encryption is applied to the entire JSON-RPC message string.
+	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
+		self.server_cfg.message_encryption = Some(Arc::new(encryption));
+		self
 	}
 
 	/// Configure a custom [`tower::ServiceBuilder`] middleware for composing layers to be applied to the RPC service.
@@ -1071,6 +1147,7 @@ where
 							let (sender, receiver) = ws_builder.finish();
 
 							let params = BackgroundTaskParams {
+								message_encryption: this.server_cfg.message_encryption.clone(),
 								server_cfg: this.server_cfg,
 								conn,
 								ws_sender: sender,
