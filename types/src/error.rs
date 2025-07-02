@@ -145,6 +145,10 @@ pub const SERVER_IS_BUSY_CODE: i32 = -32009;
 pub const TOO_BIG_BATCH_REQUEST_CODE: i32 = -32010;
 /// Batch response limit was exceed.
 pub const TOO_BIG_BATCH_RESPONSE_CODE: i32 = -32011;
+/// Message encryption failed error code.
+pub const ENCRYPTION_ERROR_CODE: i32 = -32012;
+/// Message decryption failed error code.
+pub const DECRYPTION_ERROR_CODE: i32 = -32013;
 
 /// Parse error message
 pub const PARSE_ERROR_MSG: &str = "Parse error";
@@ -172,6 +176,10 @@ pub const TOO_MANY_SUBSCRIPTIONS_MSG: &str = "Too many subscriptions on the conn
 pub const TOO_BIG_BATCH_REQUEST_MSG: &str = "The batch request was too large";
 /// Batch request response limit was exceed.
 pub const TOO_BIG_BATCH_RESPONSE_MSG: &str = "The batch response was too large";
+/// Message encryption failed error message.
+pub const ENCRYPTION_ERROR_MSG: &str = "Message encryption failed";
+/// Message decryption failed error message.
+pub const DECRYPTION_ERROR_MSG: &str = "Message decryption failed";
 
 /// JSONRPC error code
 #[derive(Error, Debug, PartialEq, Eq, Copy, Clone)]

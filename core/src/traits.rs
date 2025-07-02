@@ -156,3 +156,32 @@ pub trait ToJson {
 	/// Convert the type into a JSON value.
 	fn to_json(&self) -> Result<Box<RawValue>, serde_json::Error>;
 }
+
+/// Trait for message encryption and decryption.
+///
+/// Users can implement this trait to provide custom encryption algorithms
+/// for WebSocket message encryption.
+pub trait MessageEncryption: Send + Sync + std::fmt::Debug + 'static {
+	/// Encrypt a JSON-RPC message string.
+	fn encrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+
+	/// Decrypt a JSON-RPC message string.
+	fn decrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Policy for handling message encryption/decryption failures on the server side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageCryptoErrorPolicy {
+	/// Send an error response and continue processing (default).
+	SendError,
+	/// Close the connection immediately.
+	CloseConnection,
+	/// Skip the message and continue processing (only for decryption failures).
+	SkipMessage,
+}
+
+impl Default for MessageCryptoErrorPolicy {
+	fn default() -> Self {
+		Self::SendError
+	}
+}

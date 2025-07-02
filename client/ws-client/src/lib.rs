@@ -49,6 +49,7 @@ pub use jsonrpsee_types as types;
 use jsonrpsee_client_transport::ws::{AsyncRead, AsyncWrite, WsTransportClientBuilder};
 use jsonrpsee_core::TEN_MB_SIZE_BYTES;
 use jsonrpsee_core::client::{ClientBuilder, Error, IdKind, MaybeSend, TransportReceiverT, TransportSenderT};
+use jsonrpsee_core::traits::MessageEncryption;
 use std::time::Duration;
 use url::Url;
 
@@ -101,6 +102,7 @@ pub struct WsClientBuilder<RpcMiddleware = Logger> {
 	id_kind: IdKind,
 	tcp_no_delay: bool,
 	service_builder: RpcServiceBuilder<RpcMiddleware>,
+	message_encryption: Option<std::sync::Arc<dyn MessageEncryption>>,
 }
 
 impl Default for WsClientBuilder {
@@ -120,6 +122,7 @@ impl Default for WsClientBuilder {
 			id_kind: IdKind::Number,
 			tcp_no_delay: true,
 			service_builder: RpcServiceBuilder::default().rpc_logger(1024),
+			message_encryption: None,
 		}
 	}
 }
@@ -272,6 +275,12 @@ impl<RpcMiddleware> WsClientBuilder<RpcMiddleware> {
 		self
 	}
 
+	/// Set message encryption implementation.
+	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
+		self.message_encryption = Some(std::sync::Arc::new(encryption));
+		self
+	}
+
 	/// Set the RPC service builder.
 	pub fn set_rpc_middleware<T>(self, service_builder: RpcServiceBuilder<T>) -> WsClientBuilder<T> {
 		WsClientBuilder {
@@ -289,6 +298,7 @@ impl<RpcMiddleware> WsClientBuilder<RpcMiddleware> {
 			id_kind: self.id_kind,
 			tcp_no_delay: self.tcp_no_delay,
 			service_builder,
+			message_encryption: self.message_encryption,
 		}
 	}
 
@@ -348,6 +358,7 @@ impl<RpcMiddleware> WsClientBuilder<RpcMiddleware> {
 			max_response_size: self.max_response_size,
 			max_redirections: self.max_redirections,
 			tcp_no_delay: self.tcp_no_delay,
+			message_encryption: self.message_encryption.clone(),
 		};
 
 		let uri = Url::parse(url.as_ref()).map_err(|e| Error::Transport(e.into()))?;
@@ -377,6 +388,7 @@ impl<RpcMiddleware> WsClientBuilder<RpcMiddleware> {
 			max_response_size: self.max_response_size,
 			max_redirections: self.max_redirections,
 			tcp_no_delay: self.tcp_no_delay,
+			message_encryption: self.message_encryption.clone(),
 		};
 
 		let uri = Url::parse(url.as_ref()).map_err(|e| Error::Transport(e.into()))?;

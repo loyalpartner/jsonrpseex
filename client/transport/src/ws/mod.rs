@@ -35,6 +35,7 @@ use futures_util::io::{BufReader, BufWriter};
 use jsonrpsee_core::Cow;
 use jsonrpsee_core::TEN_MB_SIZE_BYTES;
 use jsonrpsee_core::client::{ReceivedMessage, TransportReceiverT, TransportSenderT};
+use jsonrpsee_core::traits::MessageEncryption;
 use soketto::connection::CloseReason;
 use soketto::connection::Error::Utf8;
 use soketto::data::ByteSlice125;
@@ -73,12 +74,14 @@ pub enum CertificateStore {
 pub struct Sender<T> {
 	inner: connection::Sender<BufReader<BufWriter<T>>>,
 	max_request_size: u32,
+	message_encryption: Option<std::sync::Arc<dyn MessageEncryption>>,
 }
 
 /// Receiving end of WebSocket transport.
 #[derive(Debug)]
 pub struct Receiver<T> {
 	inner: connection::Receiver<BufReader<BufWriter<T>>>,
+	message_encryption: Option<std::sync::Arc<dyn MessageEncryption>>,
 }
 
 /// Builder for a WebSocket transport [`Sender`] and [`Receiver`] pair.
@@ -99,6 +102,8 @@ pub struct WsTransportClientBuilder {
 	pub max_redirections: usize,
 	/// TCP no delay.
 	pub tcp_no_delay: bool,
+	/// Message encryption implementation.
+	pub message_encryption: Option<std::sync::Arc<dyn MessageEncryption>>,
 }
 
 impl Default for WsTransportClientBuilder {
@@ -112,6 +117,7 @@ impl Default for WsTransportClientBuilder {
 			headers: http::HeaderMap::new(),
 			max_redirections: 5,
 			tcp_no_delay: true,
+			message_encryption: None,
 		}
 	}
 }
@@ -158,6 +164,12 @@ impl WsTransportClientBuilder {
 	/// (default is 5).
 	pub fn max_redirections(mut self, redirect: usize) -> Self {
 		self.max_redirections = redirect;
+		self
+	}
+
+	/// Set message encryption implementation.
+	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
+		self.message_encryption = Some(std::sync::Arc::new(encryption));
 		self
 	}
 }
@@ -246,6 +258,12 @@ where
 	/// successfully sent.
 	fn send(&mut self, body: String) -> impl Future<Output = Result<(), Self::Error>> + Send {
 		async {
+			let body = if let Some(encryption) = &self.message_encryption {
+				encryption.encrypt(&body).map_err(|_| WsError::MessageTooLarge)?
+			} else {
+				body
+			};
+
 			if body.len() > self.max_request_size as usize {
 				return Err(WsError::MessageTooLarge);
 			}
@@ -291,7 +309,16 @@ where
 
 			match self.inner.receive(&mut message).await? {
 				Incoming::Data(Data::Text(_)) => {
-					let s = String::from_utf8(message).map_err(|err| WsError::Connection(Utf8(err.utf8_error())))?;
+					let mut s =
+						String::from_utf8(message).map_err(|err| WsError::Connection(Utf8(err.utf8_error())))?;
+					if let Some(encryption) = &self.message_encryption {
+						s = encryption.decrypt(&s).map_err(|_| {
+							WsError::Connection(soketto::connection::Error::Io(std::io::Error::new(
+								std::io::ErrorKind::InvalidData,
+								"Decryption failed",
+							)))
+						})?;
+					}
 					Ok(ReceivedMessage::Text(s))
 				}
 				Incoming::Data(Data::Binary(_)) => Ok(ReceivedMessage::Bytes(message)),
@@ -499,7 +526,14 @@ impl WsTransportClientBuilder {
 				let mut builder = client.into_builder();
 				builder.set_max_message_size(self.max_response_size as usize);
 				let (sender, receiver) = builder.finish();
-				Ok((Sender { inner: sender, max_request_size: self.max_request_size }, Receiver { inner: receiver }))
+				Ok((
+					Sender {
+						inner: sender,
+						max_request_size: self.max_request_size,
+						message_encryption: self.message_encryption.clone(),
+					},
+					Receiver { inner: receiver, message_encryption: self.message_encryption.clone() },
+				))
 			}
 
 			Ok(ServerResponse::Rejected { status_code }) => {

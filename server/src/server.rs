@@ -48,7 +48,7 @@ use jsonrpsee_core::id_providers::RandomIntegerIdProvider;
 use jsonrpsee_core::middleware::{Batch, BatchEntry, BatchEntryErr, RpcServiceBuilder, RpcServiceT};
 use jsonrpsee_core::server::helpers::prepare_error;
 use jsonrpsee_core::server::{BoundedSubscriptions, ConnectionId, MethodResponse, MethodSink, Methods};
-use jsonrpsee_core::traits::IdProvider;
+use jsonrpsee_core::traits::{IdProvider, MessageCryptoErrorPolicy, MessageEncryption};
 use jsonrpsee_core::{BoxError, JsonRawValue, TEN_MB_SIZE_BYTES};
 use jsonrpsee_types::error::{
 	BATCHES_NOT_SUPPORTED_CODE, BATCHES_NOT_SUPPORTED_MSG, ErrorCode, reject_too_big_batch_request,
@@ -61,18 +61,6 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 use tower::layer::util::Identity;
 use tower::{Layer, Service};
 use tracing::{Instrument, instrument};
-
-/// Trait for message encryption and decryption.
-/// 
-/// Users can implement this trait to provide custom encryption algorithms
-/// for WebSocket message encryption.
-pub trait MessageEncryption: Send + Sync + 'static {
-    /// Encrypt a JSON-RPC message string.
-    fn encrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
-    
-    /// Decrypt a JSON-RPC message string.
-    fn decrypt(&self, data: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
-}
 
 /// Default maximum connections allowed.
 const MAX_CONNECTIONS: u32 = 100;
@@ -212,6 +200,8 @@ pub struct ServerConfig {
 	pub(crate) tcp_no_delay: bool,
 	/// Message encryption implementation.
 	pub(crate) message_encryption: Option<Arc<dyn MessageEncryption>>,
+	/// Message encryption/decryption error handling policy.
+	pub(crate) message_crypto_error_policy: MessageCryptoErrorPolicy,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -263,6 +253,8 @@ pub struct ServerConfigBuilder {
 	tcp_no_delay: bool,
 	/// Message encryption implementation.
 	message_encryption: Option<Arc<dyn MessageEncryption>>,
+	/// Message encryption/decryption error handling policy.
+	message_crypto_error_policy: MessageCryptoErrorPolicy,
 }
 
 impl std::fmt::Debug for ServerConfigBuilder {
@@ -422,6 +414,7 @@ impl Default for ServerConfigBuilder {
 			id_provider: Arc::new(RandomIntegerIdProvider),
 			tcp_no_delay: true,
 			message_encryption: None,
+			message_crypto_error_policy: MessageCryptoErrorPolicy::default(),
 		}
 	}
 }
@@ -578,11 +571,17 @@ impl ServerConfigBuilder {
 	}
 
 	/// Set custom message encryption implementation.
-	/// 
+	///
 	/// This enables encryption/decryption of JSON-RPC messages sent over WebSocket.
 	/// The encryption is applied to the entire JSON-RPC message string.
 	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
 		self.message_encryption = Some(Arc::new(encryption));
+		self
+	}
+
+	/// Set message encryption/decryption error handling policy.
+	pub fn set_message_crypto_error_policy(mut self, policy: MessageCryptoErrorPolicy) -> Self {
+		self.message_crypto_error_policy = policy;
 		self
 	}
 
@@ -602,6 +601,7 @@ impl ServerConfigBuilder {
 			id_provider: self.id_provider,
 			tcp_no_delay: self.tcp_no_delay,
 			message_encryption: self.message_encryption,
+			message_crypto_error_policy: self.message_crypto_error_policy,
 		}
 	}
 }
@@ -778,11 +778,19 @@ impl<HttpMiddleware, RpcMiddleware> Builder<HttpMiddleware, RpcMiddleware> {
 	}
 
 	/// Set custom message encryption implementation.
-	/// 
+	///
 	/// This enables encryption/decryption of JSON-RPC messages sent over WebSocket.
 	/// The encryption is applied to the entire JSON-RPC message string.
 	pub fn set_message_encryption<E: MessageEncryption>(mut self, encryption: E) -> Self {
 		self.server_cfg.message_encryption = Some(Arc::new(encryption));
+		self
+	}
+
+	/// Set message encryption/decryption error handling policy.
+	///
+	/// This policy controls how the server responds to encryption/decryption failures.
+	pub fn set_message_crypto_error_policy(mut self, policy: MessageCryptoErrorPolicy) -> Self {
+		self.server_cfg.message_crypto_error_policy = policy;
 		self
 	}
 
