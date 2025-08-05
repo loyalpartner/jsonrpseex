@@ -542,6 +542,10 @@ where
 			let (tx, rx) = mpsc::channel(server_cfg.message_buffer_capacity as usize);
 			let sink = MethodSink::new(tx);
 
+			// Store connection info for later registration
+			let conn_id = conn.conn_id;
+			let conn_mgr = server_cfg.connection_manager.clone();
+
 			// On each method call the `pending_calls` is cloned
 			// then when all pending_calls are dropped
 			// a graceful shutdown can has occur.
@@ -566,6 +570,10 @@ where
 			// Note: This can't possibly be fulfilled until the HTTP response
 			// is returned below, so that's why it's a separate async block
 			let fut = async move {
+				// Register connection with ConnectionManager if available
+				if let Some(conn_mgr) = &conn_mgr {
+					conn_mgr.register_connection(conn_id.into(), sink.clone()).await;
+				}
 				let extensions = req.extensions().clone();
 
 				let upgraded = match hyper::upgrade::on(req).await {
@@ -598,6 +606,11 @@ where
 				};
 
 				background_task(params).await;
+
+				// Unregister connection from ConnectionManager when background task ends
+				if let Some(conn_mgr) = &conn_mgr {
+					conn_mgr.unregister_connection(conn_id.into()).await;
+				}
 			};
 
 			Ok((response.map(|()| HttpBody::default()), fut))

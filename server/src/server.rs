@@ -33,6 +33,7 @@ use std::sync::atomic::AtomicU32;
 use std::task::Poll;
 use std::time::Duration;
 
+use crate::connection_manager::ConnectionManager;
 use crate::future::{ConnectionGuard, ServerHandle, SessionClose, SessionClosedFuture, StopHandle, session_close};
 use crate::middleware::rpc::{RpcService, RpcServiceCfg};
 use crate::transport::ws::BackgroundTaskParams;
@@ -202,6 +203,8 @@ pub struct ServerConfig {
 	pub(crate) message_encryption: Option<Arc<dyn MessageEncryption>>,
 	/// Message encryption/decryption error handling policy.
 	pub(crate) message_crypto_error_policy: MessageCryptoErrorPolicy,
+	/// Connection manager for handling notifications.
+	pub(crate) connection_manager: Option<Arc<ConnectionManager>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -220,6 +223,7 @@ impl std::fmt::Debug for ServerConfig {
 			.field("id_provider", &"Arc<dyn IdProvider>")
 			.field("tcp_no_delay", &self.tcp_no_delay)
 			.field("message_encryption", &self.message_encryption.is_some())
+			.field("connection_manager", &self.connection_manager.is_some())
 			.finish()
 	}
 }
@@ -255,6 +259,8 @@ pub struct ServerConfigBuilder {
 	message_encryption: Option<Arc<dyn MessageEncryption>>,
 	/// Message encryption/decryption error handling policy.
 	message_crypto_error_policy: MessageCryptoErrorPolicy,
+	/// Connection manager for handling notifications.
+	connection_manager: Option<Arc<ConnectionManager>>,
 }
 
 impl std::fmt::Debug for ServerConfigBuilder {
@@ -273,6 +279,7 @@ impl std::fmt::Debug for ServerConfigBuilder {
 			.field("id_provider", &"Arc<dyn IdProvider>")
 			.field("tcp_no_delay", &self.tcp_no_delay)
 			.field("message_encryption", &self.message_encryption.is_some())
+			.field("connection_manager", &self.connection_manager.is_some())
 			.finish()
 	}
 }
@@ -415,6 +422,7 @@ impl Default for ServerConfigBuilder {
 			tcp_no_delay: true,
 			message_encryption: None,
 			message_crypto_error_policy: MessageCryptoErrorPolicy::default(),
+			connection_manager: None,
 		}
 	}
 }
@@ -585,6 +593,15 @@ impl ServerConfigBuilder {
 		self
 	}
 
+	/// Set connection manager for handling server-initiated notifications.
+	///
+	/// When set, the server will automatically register and unregister WebSocket connections,
+	/// allowing you to send notifications to clients without them needing to subscribe first.
+	pub fn set_connection_manager(mut self, connection_manager: Arc<ConnectionManager>) -> Self {
+		self.connection_manager = Some(connection_manager);
+		self
+	}
+
 	/// Build the [`ServerConfig`].
 	pub fn build(self) -> ServerConfig {
 		ServerConfig {
@@ -602,6 +619,7 @@ impl ServerConfigBuilder {
 			tcp_no_delay: self.tcp_no_delay,
 			message_encryption: self.message_encryption,
 			message_crypto_error_policy: self.message_crypto_error_policy,
+			connection_manager: self.connection_manager,
 		}
 	}
 }
@@ -1112,6 +1130,10 @@ where
 					let (tx, rx) = mpsc::channel(this.server_cfg.message_buffer_capacity as usize);
 					let sink = MethodSink::new(tx);
 
+					// Store connection info for registration after async upgrade
+					let conn_id = conn.conn_id;
+					let conn_mgr = this.server_cfg.connection_manager.clone();
+
 					// On each method call the `pending_calls` is cloned
 					// then when all pending_calls are dropped
 					// a graceful shutdown can occur.
@@ -1137,6 +1159,11 @@ where
 
 					tokio::spawn(
 						async move {
+							// Register connection with ConnectionManager if available
+							if let Some(conn_mgr) = &conn_mgr {
+								conn_mgr.register_connection(conn_id.into(), sink.clone()).await;
+							}
+
 							let extensions = request.extensions().clone();
 
 							let upgraded = match hyper::upgrade::on(request).await {
@@ -1169,6 +1196,11 @@ where
 							};
 
 							ws::background_task(params).await;
+
+							// Unregister connection from ConnectionManager when background task ends
+							if let Some(conn_mgr) = &conn_mgr {
+								conn_mgr.unregister_connection(conn_id.into()).await;
+							}
 						}
 						.in_current_span(),
 					);

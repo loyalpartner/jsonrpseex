@@ -14,12 +14,21 @@ use crate::{
 	transport::{Error as TransportError, HttpTransportClient},
 };
 
+/// RPC service that provides JSON-RPC functionality over HTTP transport.
+///
+/// This service implements the `RpcServiceT` trait to handle JSON-RPC requests,
+/// batches, and notifications using an underlying HTTP transport client.
 #[derive(Clone, Debug)]
 pub struct RpcService<HttpMiddleware> {
 	service: Arc<HttpTransportClient<HttpMiddleware>>,
 }
 
 impl<HttpMiddleware> RpcService<HttpMiddleware> {
+	/// Creates a new RPC service with the provided HTTP transport client.
+	///
+	/// # Arguments
+	///
+	/// * `service` - The HTTP transport client to use for sending requests
 	pub fn new(service: HttpTransportClient<HttpMiddleware>) -> Self {
 		Self { service: Arc::new(service) }
 	}

@@ -31,6 +31,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod connection_manager;
 mod future;
 mod server;
 mod transport;
@@ -41,6 +42,7 @@ pub mod middleware;
 #[cfg(test)]
 mod tests;
 
+pub use connection_manager::{ConnectionManager, ConnectionStats, Notification, NotificationError};
 pub use future::{AlreadyStoppedError, ConnectionGuard, ConnectionPermit, ServerHandle, StopHandle, stop_channel};
 pub use jsonrpsee_core::error::RegisterMethodError;
 pub use jsonrpsee_core::server::*;
