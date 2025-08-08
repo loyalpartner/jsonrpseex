@@ -134,6 +134,12 @@ tuple_impls! {
 	16 => (0 T0 1 T1 2 T2 3 T3 4 T4 5 T5 6 T6 7 T7 8 T8 9 T9 10 T10 11 T11 12 T12 13 T13 14 T14 15 T15)
 }
 
+impl ToRpcParams for Box<RawValue> {
+	fn to_rpc_params(self) -> Result<Option<Box<RawValue>>, serde_json::Error> {
+		Ok(Some(self))
+	}
+}
+
 /// Trait to generate subscription IDs.
 pub trait IdProvider: Send + Sync + std::fmt::Debug {
 	/// Returns the next ID for the subscription.

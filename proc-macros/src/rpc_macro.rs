@@ -143,6 +143,14 @@ impl RpcMethod {
 			syn::ReturnType::Type(_, output) => Some(*output),
 		};
 
+		// Validate param_kind constraints
+		if matches!(param_kind, ParamKind::Object) && params.len() != 1 {
+			return Err(syn::Error::new(
+				method.sig.span(),
+				"param_kind = object can only be used with exactly one parameter",
+			));
+		}
+
 		// We've analyzed attributes and don't need them anymore.
 		method.attrs.clear();
 
@@ -226,6 +234,14 @@ impl RpcSubscription {
 				},
 			})
 			.collect::<Result<_, _>>()?;
+
+		// Validate param_kind constraints
+		if matches!(param_kind, ParamKind::Object) && params.len() != 1 {
+			return Err(syn::Error::new(
+				sub.sig.span(),
+				"param_kind = object can only be used with exactly one parameter",
+			));
+		}
 
 		// We've analyzed attributes and don't need them anymore.
 		sub.attrs.clear();

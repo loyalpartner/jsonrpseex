@@ -29,6 +29,7 @@ use std::str::FromStr;
 
 use super::RpcDescription;
 use crate::{
+	attributes::ParamKind,
 	helpers::{generate_where_clause, is_option},
 	rpc_macro::RpcFnArg,
 };
@@ -149,7 +150,7 @@ impl RpcDescription {
 				// provided `Params` object.
 				// `params_seq` is the comma-delimited sequence of parameters we're passing to the rust function
 				// called..
-				let (parsing, params_seq) = self.render_params_decoding(&method.params, None);
+				let (parsing, params_seq) = self.render_params_decoding(&method.params, &method.param_kind, None);
 
 				let into_response = self.jrps_server_item(quote! { IntoResponse });
 
@@ -210,7 +211,7 @@ impl RpcDescription {
 				// provided `Params` object.
 				// `params_seq` is the comma-delimited sequence of parameters.
 				let pending = proc_macro2::Ident::new("pending", rust_method_name.span());
-				let (parsing, params_seq) = self.render_params_decoding(&sub.params, Some(pending));
+				let (parsing, params_seq) = self.render_params_decoding(&sub.params, &sub.param_kind, Some(pending));
 				let sub_err = self.jrps_server_item(quote! { SubscriptionCloseResponse });
 				let into_sub_response = self.jrps_server_item(quote! { IntoSubscriptionCloseResponse });
 
@@ -346,10 +347,51 @@ impl RpcDescription {
 	fn render_params_decoding(
 		&self,
 		params: &[RpcFnArg],
+		param_kind: &ParamKind,
 		sub: Option<proc_macro2::Ident>,
 	) -> (TokenStream2, TokenStream2) {
 		if params.is_empty() {
 			return (TokenStream2::default(), TokenStream2::default());
+		}
+
+		// Handle object parsing for single parameter case
+		if matches!(param_kind, ParamKind::Object) {
+			if params.len() != 1 {
+				// This should be caught during macro parsing, not here
+				// Return empty parsing to let the normal error handling take over
+				return (TokenStream2::default(), TokenStream2::default());
+			}
+
+			let param = &params[0];
+			let param_name = param.arg_pat();
+			let param_type = param.ty();
+			let reexports = self.jrps_server_item(quote! { core::__reexports });
+
+			let error_ret = if let Some(pending) = &sub {
+				let tokio = quote! { #reexports::tokio };
+				let sub_err = self.jrps_server_item(quote! { SubscriptionCloseResponse });
+				quote! {
+					#tokio::spawn(#pending.reject(e));
+					return #sub_err::None;
+				}
+			} else {
+				let response_payload = self.jrps_server_item(quote! { ResponsePayload });
+				quote! {
+					return #response_payload::error(e);
+				}
+			};
+
+			let parsing = quote! {
+				let #param_name: #param_type = match params.parse() {
+					Ok(parsed) => parsed,
+					Err(e) => {
+						#reexports::log_fail_parse_as_object(&e);
+						#error_ret
+					}
+				};
+			};
+
+			return (parsing, quote! { #param_name });
 		}
 
 		let params_fields_seq = params.iter().map(RpcFnArg::arg_pat);

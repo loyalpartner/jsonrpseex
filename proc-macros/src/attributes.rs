@@ -45,6 +45,7 @@ pub(crate) struct Argument {
 pub enum ParamKind {
 	Array,
 	Map,
+	Object,
 }
 
 pub struct NameMapping {
@@ -227,6 +228,7 @@ pub(crate) fn parse_param_kind(arg: Result<Argument, MissingArgument>) -> syn::R
 		None => Ok(ParamKind::Array),
 		Some(ident) if ident == "array" => Ok(ParamKind::Array),
 		Some(ident) if ident == "map" => Ok(ParamKind::Map),
-		ident => Err(Error::new(ident.span(), "param_kind must be either `map` or `array`")),
+		Some(ident) if ident == "object" => Ok(ParamKind::Object),
+		ident => Err(Error::new(ident.span(), "param_kind must be either `array`, `map`, or `object`")),
 	}
 }

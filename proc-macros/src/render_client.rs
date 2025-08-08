@@ -227,6 +227,27 @@ impl RpcDescription {
 		}
 
 		match param_kind {
+			ParamKind::Object => {
+				// For object parameters, we expect exactly one parameter that will be serialized directly
+				if params.len() != 1 {
+					// This should be caught during macro parsing, not here
+					// Return empty ArrayParams as fallback
+					return quote!({
+						#jsonrpsee::core::params::ArrayParams::new()
+					});
+				}
+
+				let param = params.iter().map(RpcFnArg::arg_pat).next().unwrap();
+
+				quote!({
+					match #reexports::serde_json::value::to_raw_value(&#param) {
+						Ok(raw_value) => raw_value,
+						Err(err) => {
+							#reexports::panic_fail_serialize(stringify!(#param), err);
+						}
+					}
+				})
+			}
 			ParamKind::Map => {
 				// Extract parameter names.
 				let param_names = extract_param_names(&signature.sig);
